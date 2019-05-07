@@ -9,6 +9,7 @@ __pycache__/
 *.json
 *.msgpack
 *.pth
+*.bin
 # Distribution / packaging
 .Python
 build/
@@ -16,6 +17,8 @@ develop-eggs/
 dist/
 downloads/
 eggs/
+.tmp.drivedownload/
+.idea/
 .eggs/
 lib/
 lib64/

@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from allennlp.modules.elmo import Elmo
 from allennlp.nn.util import remove_sentence_boundaries
+
 from . import layers
 
 
@@ -170,7 +171,7 @@ class FlowQA(nn.Module):
         x2_c = question char indices           [(batch * q_num) * len_q * len_w]
         x2_full_mask = question padding mask   [batch * q_num * len_q]
         """
-
+        # print('in forward:x1_c size:',x1_c.size(),x1_c)
         # precomputing ELMo is only for context (to speedup computation)
         if self.opt['use_elmo'] and self.opt['elmo_batch_size'] > self.opt['batch_size']:  # precomputing ELMo is used
             if x1_c.dim() != 1:  # precomputation is needed
