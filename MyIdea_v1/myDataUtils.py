@@ -4,7 +4,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import json
 import torch
 import argparse
-from pytorch_pretrained_bert import TransfoXLTokenizer, TransfoXLModel, TransfoXLLMHeadModel
+from pytorch_pretrained_bert import TransfoXLTokenizer, TransfoXLModel
 import logging
 
 logging.basicConfig(
@@ -78,7 +78,21 @@ def tokens2ids(text):
     return tokens_tensor
 
 
-def genBatch(mode='train', bsz=4, ismasked=True):
+model = TransfoXLModel.from_pretrained('pretrained_model')
+model.eval()
+
+
+def ids2embeddings(ids):
+    global model
+    if torch.cuda.is_available():
+        model = model.cuda()
+        ids = ids.cuda()
+    with torch.no_grad():
+        hidden_state, mems = model(ids)
+    return hidden_state
+
+
+def genBatch(mode='train', bsz=2, ismasked=True):
     if mode == 'train':
         contexts, ques, ans, tags, contextsLength, quesLength, ansLength = readTrainjson(
             QuACdata_path)

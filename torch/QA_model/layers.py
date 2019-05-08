@@ -146,7 +146,7 @@ class MemoryLasagna_Time(nn.Module):
     def get_init(self, sample_tensor):
         global my_dropout_p
         self.dropout_mask = 1.0 / (1 - my_dropout_p) * torch.bernoulli((1 - my_dropout_p) * (
-                    sample_tensor.new_zeros(sample_tensor.size(0), sample_tensor.size(1), self.input_size) + 1))
+                sample_tensor.new_zeros(sample_tensor.size(0), sample_tensor.size(1), self.input_size) + 1))
 
         h = sample_tensor.new_zeros(sample_tensor.size(0), sample_tensor.size(1), self.hidden_size).float()
         memory = sample_tensor.new_zeros(sample_tensor.size(0) * sample_tensor.size(1), self.hidden_size).float()
@@ -410,6 +410,11 @@ class BilinearSeqAttn(nn.Module):
         Wy = self.linear(y) if self.linear is not None else y
         xWy = x.bmm(Wy.unsqueeze(2)).squeeze(2)
         xWy.data.masked_fill_(x_mask.data, -float('inf'))
+        print('x:', x.size())
+        print('y:', y.size())
+        print('x_mask:', x_mask.size(), x_mask)
+        print('xWy', xWy.size())
+
         return xWy
 
 
@@ -429,6 +434,7 @@ class GetSpanStartEnd(nn.Module):
         h0 = batch * h_size
         x_mask = batch * len
         """
+        print('span,x:', x.size())
         st_scores = self.attn(x, h0, x_mask)
         # st_scores = batch * len
 
@@ -443,6 +449,8 @@ class GetSpanStartEnd(nn.Module):
 
         end_scores = self.attn(x, h1, x_mask) if self.attn2 is None else \
             self.attn2(x, h1, x_mask)
+        print('st,end', st_scores.size(), st_scores.argmax(), end_scores.size(), end_scores.argmax())
+        exit(0)
         # end_scores = batch * len
         return st_scores, end_scores
 
