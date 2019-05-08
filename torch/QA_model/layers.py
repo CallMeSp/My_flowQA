@@ -387,8 +387,9 @@ class LinearSelfAttn(nn.Module):
 
 # For attending the span in document from the query
 class BilinearSeqAttn(nn.Module):
-    """A bilinear attention layer over a sequence X w.r.t y:
-    * o_i = x_i'Wy for x_i in X.
+    """
+    A bilinear attention layer over a sequence X w.r.t y:
+    o_i = x_i'Wy for x_i in X.
     """
 
     def __init__(self, x_size, y_size, opt, identity=False):
@@ -435,6 +436,7 @@ class GetSpanStartEnd(nn.Module):
         x_mask = batch * len
         """
         print('span,x:', x.size())
+        print('xmask',x_mask.argmax(),x_mask.sum(-1))
         st_scores = self.attn(x, h0, x_mask)
         # st_scores = batch * len
 
@@ -449,7 +451,7 @@ class GetSpanStartEnd(nn.Module):
 
         end_scores = self.attn(x, h1, x_mask) if self.attn2 is None else \
             self.attn2(x, h1, x_mask)
-        print('st,end', st_scores.size(), st_scores.argmax(), end_scores.size(), end_scores.argmax())
+        print('st,end', st_scores.size(), st_scores.argmax(dim=-1), end_scores.size(), end_scores.argmax(dim=-1))
         exit(0)
         # end_scores = batch * len
         return st_scores, end_scores

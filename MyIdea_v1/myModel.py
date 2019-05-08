@@ -9,8 +9,12 @@ from torch.nn.parameter import Parameter
 from pytorch_pretrained_bert import TransfoXLModel
 from torch.autograd import Variable
 import logging
+import myDataUtils
+import time
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -309,12 +313,17 @@ class AttentionScore(nn.Module):
 
     def __init__(self, x1, x2, attention_hidden_size, similarity_score=False):
         super(AttentionScore, self).__init__()
-        self.linear1 = nn.Linear(x1.size(-1), attention_hidden_size, bias=False)
-        self.linear2 = nn.Linear(x2.size(-1), attention_hidden_size, bias=False)
+        self.linear1 = nn.Linear(
+            x1.size(-1), attention_hidden_size, bias=False)
+        self.linear2 = nn.Linear(
+            x2.size(-1), attention_hidden_size, bias=False)
         if similarity_score:
-            self.linear_final = Parameter(torch.ones(1, 1, 1) / (attention_hidden_size ** 0.5), requires_grad=False)
+            self.linear_final = Parameter(
+                torch.ones(1, 1, 1) / (attention_hidden_size ** 0.5),
+                requires_grad=False)
         else:
-            self.linear_final = Parameter(torch.ones(1, 1, attention_hidden_size), requires_grad=True)
+            self.linear_final = Parameter(
+                torch.ones(1, 1, attention_hidden_size), requires_grad=True)
 
     def forward(self, x1, x2):
         """
@@ -324,8 +333,10 @@ class AttentionScore(nn.Module):
         """
         # x1 = dropout(x1, p=my_dropout_p, training=self.training)
         # x2 = dropout(x2, p=my_dropout_p, training=self.training)
-        x1_rep = self.linear1(x1.contiguous().view(-1, x1.size(-1))).view(x1.size(0), x1.size(1), -1)
-        x2_rep = self.linear2(x2.contiguous().view(-1, x2.size(-1))).view(x2.size(0), x2.size(1), -1)
+        x1_rep = self.linear1(x1.contiguous().view(-1, x1.size(-1))).view(
+            x1.size(0), x1.size(1), -1)
+        x2_rep = self.linear2(x2.contiguous().view(-1, x2.size(-1))).view(
+            x2.size(0), x2.size(1), -1)
 
         x1_rep = F.relu(x1_rep)
         x2_rep = F.relu(x2_rep)
@@ -350,14 +361,17 @@ class AwareIntegration(nn.Module):
         self.context = context.unsqueeze(0)
         self.questions = questions
         attention_hidden_size = 2 * context.size(-1)
-        self.scoreLayer = AttentionScore(self.context, self.questions, attention_hidden_size)
-        self.questionsAwareContexts = torch.ones(len(questions), context.size(0), questions.size(-1))
+        self.scoreLayer = AttentionScore(self.context, self.questions,
+                                         attention_hidden_size)
+        self.questionsAwareContexts = torch.ones(
+            len(questions), context.size(0), questions.size(-1))
 
     def forward(self):
         for i in range(len(self.questions)):
             question = self.questions[i].unsqueeze(0)
             score = self.scoreLayer(self.context, question)
-            questionAwareContext = F.softmax(score, dim=-1).bmm(question).squeeze(0)
+            questionAwareContext = F.softmax(
+                score, dim=-1).bmm(question).squeeze(0)
             self.questionsAwareContexts[i] = questionAwareContext
         return self.questionsAwareContexts
 
@@ -377,15 +391,52 @@ class QuestionAwareContextLayer(nn.Module):
         self.tags = tags
 
     def forward(self):
-        aware_contexts = torch.Tensor(len(self.questions), self.contexts.size(-2), self.questions.size(-1) * 2)
+        aware_contexts = torch.Tensor(
+            len(self.questions), self.contexts.size(-2),
+            self.questions.size(-1) * 2)
         start = 0
         for i in range(len(self.contexts)):
             cur_context_que = self.questions[self.tags == i]
-            before_aware_questions = QuestionFlowLayer(cur_context_que).forward()
-            cur_aware_context = AwareIntegration(self.contexts[i], before_aware_questions)
-            aware_contexts[start:start + len(cur_context_que)] = cur_aware_context.forward()
+            before_aware_questions = QuestionFlowLayer(
+                cur_context_que).forward()
+            cur_aware_context = AwareIntegration(self.contexts[i],
+                                                 before_aware_questions)
+            aware_contexts[start:start +
+                                 len(cur_context_que)] = cur_aware_context.forward()
             start += len(cur_context_que)
         return aware_contexts
+
+
+def test():
+    contexts = myDataUtils.genBatch()
+    start = time.time()
+    for i in range(5784):
+        (contexts_batch, ques_batch, ans_batch, tags_batch,
+         contextsLength_batch, quesLength_batch,
+         ansLength_batch) = next(contexts)
+
+        context_batch_id = myDataUtils.tokens2ids(contexts_batch)
+        ques_batch_id = myDataUtils.tokens2ids(ques_batch)
+
+        context_batch_emb = myDataUtils.ids2embeddings(context_batch_id)
+        ques_batch_emb = myDataUtils.ids2embeddings(ques_batch_id)
+        tags_batch = torch.IntTensor(tags_batch)
+
+        print('context_batch_emb:', context_batch_emb.size())
+        print('ques_batch_emb', ques_batch_emb.size())
+
+        QAC = QuestionAwareContextLayer(
+            contexts=context_batch_emb,
+            questions=ques_batch_emb,
+            tags=tags_batch)
+
+        print(QAC.forward().size())
+        exit(0)
+        # print(context_batch_emb.size())
+        print(i)
+    end = time.time()
+    print((start - end) / 60)
+    exit(0)
 
 
 if __name__ == '__main__':
@@ -396,14 +447,16 @@ if __name__ == '__main__':
     # SALayer = SelfAttLayer(ff(testdata), 1)
     # print(SALayer.forward(testdata).size())
 
-    # QuestionFlow Attn Test
-    x = torch.from_numpy(np.random.randint(10, size=[64, 2000, 2000])).float()
-    qf = QuestionFlowLayer(x)
-    print(qf.forward().size())
+    # # QuestionFlow Attn Test
+    # x = torch.from_numpy(np.random.randint(10, size=[64, 2000, 2000])).float()
+    # qf = QuestionFlowLayer(x)
+    # print(qf.forward().size())
 
-    # QuestionAwareContextLayer test
-    c = torch.from_numpy(np.random.rand(3, 5, 6)).float()
-    q = torch.from_numpy(np.random.rand(7, 7, 9)).float()
-    qtags = torch.IntTensor([0, 0, 1, 1, 1, 2, 2])
-    QAC = QuestionAwareContextLayer(contexts=c, questions=q, tags=qtags)
-    print(QAC.forward().size())
+    # # QuestionAwareContextLayer test
+    # c = torch.from_numpy(np.random.rand(3, 5, 6)).float()
+    # q = torch.from_numpy(np.random.rand(7, 7, 9)).float()
+    # qtags = torch.IntTensor([0, 0, 1, 1, 1, 2, 2])
+    # QAC = QuestionAwareContextLayer(contexts=c, questions=q, tags=qtags)
+    # print(QAC.forward().size())
+
+    test()

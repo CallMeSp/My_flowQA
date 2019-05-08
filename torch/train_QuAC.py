@@ -45,7 +45,7 @@ parser.add_argument('--do_not_save', action='store_true', help='don\'t save any 
 parser.add_argument('--save_for_predict', action='store_true')
 parser.add_argument('--seed', type=int, default=1023,
                     help='random seed for data shuffling, dropout, etc.')
-parser.add_argument('--cuda', type=bool, default=torch.cuda.is_available(),
+parser.add_argument('--cuda', type=bool, default=False,
                     help='whether to use GPU acceleration.')
 # training
 parser.add_argument('-e', '--epoches', type=int, default=30)

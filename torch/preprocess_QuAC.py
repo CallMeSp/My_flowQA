@@ -34,8 +34,10 @@ parser.add_argument('--seed', type=int, default=1023,
 args = parser.parse_args()
 trn_file = 'QuAC_data/train.json'
 dev_file = 'QuAC_data/dev.json'
+# glove
 wv_file = args.wv_file
 wv_dim = args.wv_dim
+
 nlp = spacy.load('en', disable=['parser'])
 
 random.seed(args.seed)
@@ -103,11 +105,6 @@ trC_tokens = [[normalize_text(w.text) for w in doc] for doc in trC_docs]
 trQ_tokens = [[normalize_text(w.text) for w in doc] for doc in trQ_docs]
 trC_unnorm_tokens = [[w.text for w in doc] for doc in trC_docs]
 log.info('All tokens for training are obtained.')
-# for a, b in zip(train_context, trC_unnorm_tokens):
-#     print(a)
-#     print(b)
-#     print(get_context_span(a, b))
-#     exit(0)
 # 得到context中除了空白符的其它所有word和标点符号的以character为单位的span
 train_context_span = [get_context_span(a, b) for a, b in zip(train_context, trC_unnorm_tokens)]
 ans_st_token_ls, ans_end_token_ls = [], []
@@ -126,10 +123,14 @@ train.dropna(inplace=True)  # modify self DataFrame
 log.info('drop {0}/{1} inconsistent samples.'.format(initial_len - len(train), initial_len))
 log.info('answer span for training is generated.')
 # features
-print('args.nomatch:',args.no_match)
+print('args.nomatch:', args.no_match)
 
+# trc_tags:list of 每个word的tag
+# trc_ents:list of 每个word的实体识别，如果不是实体就=''
+# trc_features:list of 每个word为一个元组(match_origin, match_lower, match_lemma, term_freq)
 trC_tags, trC_ents, trC_features = feature_gen(trC_docs, train.context_idx, trQ_docs, args.no_match)
 log.info('features for training is generated: {}, {}, {}'.format(len(trC_tags), len(trC_ents), len(trC_features)))
+
 
 def build_train_vocab(questions, contexts):  # vocabulary will also be sorted accordingly
     if args.sort_all:
@@ -153,7 +154,7 @@ def build_train_vocab(questions, contexts):  # vocabulary will also be sorted ac
     return vocab
 
 
-# vocab
+# vocab,一个list包含在questions和context的所有word（在glove中有的），按照词频顺序排列
 tr_vocab = build_train_vocab(trQ_tokens, trC_tokens)
 trC_ids = token2id(trC_tokens, tr_vocab, unk_id=1)
 trQ_ids = token2id(trQ_tokens, tr_vocab, unk_id=1)
