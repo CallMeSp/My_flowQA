@@ -84,16 +84,26 @@ class GetSpanStartEnd(nn.Module):
             self.attn2(x, h1, x_mask)
         print('st,end', st_scores.size(), st_scores.argmax(),
               end_scores.size(), end_scores.argmax())
-        exit(0)
         # end_scores = batch * len
         return st_scores, end_scores
 
 
 if __name__ == '__main__':
-    x = torch.from_numpy(np.random.rand(2, 3, 6)).float()
-    y = torch.from_numpy(np.random.rand(2, 9)).float()
-    x_mask = torch.IntTensor([[0, 0, 1], [0, 1, 0]])
+    # x = torch.from_numpy(np.random.rand(2, 3, 6)).float()
+    # y = torch.from_numpy(np.random.rand(2, 9)).float()
+    # x_mask = torch.ByteTensor([[1, 1, 0], [1, 1, 1]])
 
-    gs = GetSpanStartEnd(6, 9)
+    # gs = GetSpanStartEnd(6, 9)
 
-    print(gs(x, y, x_mask).size())
+    # print('gs:', gs(x, y, x_mask))
+
+    tags = torch.ByteTensor([[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
+    t = torch.LongTensor(tags.sum().item()).fill_(0)
+    s = 0
+    for i, row in enumerate(tags):
+        print(tags[i], tags[i].sum().item())
+        t[s:s + tags[i].sum().item()] = i
+        s += tags[i].sum().item()
+    print(t)

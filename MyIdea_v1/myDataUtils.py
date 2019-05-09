@@ -78,12 +78,12 @@ def tokens2ids(text):
     return tokens_tensor
 
 
-model = TransfoXLModel.from_pretrained('pretrained_model')
-model.eval()
+
 
 
 def ids2embeddings(ids):
-    global model
+    model = TransfoXLModel.from_pretrained('./pretrained_model')
+    model.eval()
     if torch.cuda.is_available():
         model = model.cuda()
         ids = ids.cuda()

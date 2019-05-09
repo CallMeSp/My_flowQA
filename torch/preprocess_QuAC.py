@@ -160,7 +160,6 @@ trC_ids = token2id(trC_tokens, tr_vocab, unk_id=1)
 trQ_ids = token2id(trQ_tokens, tr_vocab, unk_id=1)
 trQ_tokens = [["<S>"] + doc + ["</S>"] for doc in trQ_tokens]
 trQ_ids = [[2] + qsent + [3] for qsent in trQ_ids]
-print(trQ_ids[:10])
 
 # tags
 vocab_tag = [''] + list(nlp.tagger.labels)
@@ -178,6 +177,7 @@ log.info('got embedding matrix for training.')
 # don't store row name in csv
 # train.to_csv('QuAC_data/train.csv', index=False, encoding='utf8')
 
+# 只包含词汇表和embedding
 meta = {
     'vocab': tr_vocab,
     'embedding': tr_embedding.tolist()

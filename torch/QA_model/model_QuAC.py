@@ -8,7 +8,7 @@ import logging
 from torch.nn import Parameter
 from torch.autograd import Variable
 from .utils import AverageMeter
-from .detail_model import FlowQA
+from .detail_model_v2 import FlowQA
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,9 @@ class QAModel(object):
         # Building optimizer.
         parameters = [p for p in self.network.parameters() if p.requires_grad]
         if opt['optimizer'] == 'sgd':
+            # momentum(default)=0
+            # weight_decay(default)=0
+            # learning_rate=0.1
             self.optimizer = optim.SGD(parameters, opt['learning_rate'],
                                        momentum=opt['momentum'],
                                        weight_decay=opt['weight_decay'])
@@ -50,10 +53,14 @@ class QAModel(object):
             raise RuntimeError('Unsupported optimizer: %s' % opt['optimizer'])
         if state_dict:
             self.optimizer.load_state_dict(state_dict['optimizer'])
-
+        # fix_embeddings(default)=False
         if opt['fix_embeddings']:
             wvec_size = 0
         else:
+            # tune_partial(default)=1000
+            # print(opt['vocab_size'], opt['tune_partial'], opt['embedding_dim'],
+            #       (opt['vocab_size'] - opt['tune_partial']) * opt['embedding_dim'])
+            # =89349 1000 300 26504700
             wvec_size = (opt['vocab_size'] - opt['tune_partial']) * opt['embedding_dim']
         self.total_param = sum([p.nelement() for p in parameters]) - wvec_size
 
@@ -64,14 +71,15 @@ class QAModel(object):
 
         # Transfer to GPU
         if self.opt['cuda']:
-            inputs = [e.cuda(non_blocking=True) for e in batch[:9]]
+            inputs = [e.cuda(non_blocking=True) for e in batch[:10]]
+            # overall_mask:[bsz,max_q_num] =1 if 存在q
             overall_mask = batch[9].cuda(non_blocking=True)
 
             answer_s = batch[10].cuda(non_blocking=True)
             answer_e = batch[11].cuda(non_blocking=True)
             answer_c = batch[12].cuda(non_blocking=True)
         else:
-            inputs = [e for e in batch[:9]]
+            inputs = [e for e in batch[:10]]
             overall_mask = batch[9]
 
             answer_s = batch[10]
@@ -83,29 +91,36 @@ class QAModel(object):
         score_s, score_e, score_no_answ = self.network(*inputs)
 
         # Compute loss and accuracies
+        # elmo_lambda=0
         loss = self.opt['elmo_lambda'] * (self.network.elmo.scalar_mix_0.scalar_parameters[0] ** 2
-                                        + self.network.elmo.scalar_mix_0.scalar_parameters[1] ** 2
-                                        + self.network.elmo.scalar_mix_0.scalar_parameters[2] ** 2) # ELMo L2 regularization
+                                          + self.network.elmo.scalar_mix_0.scalar_parameters[1] ** 2
+                                          + self.network.elmo.scalar_mix_0.scalar_parameters[
+                                              2] ** 2)  # ELMo L2 regularization
         all_no_answ = (answer_c == 0)
-        answer_s.masked_fill_(all_no_answ, -100) # ignore_index is -100 in F.cross_entropy
+        answer_s.masked_fill_(all_no_answ, -100)  # ignore_index is -100 in F.cross_entropy
         answer_e.masked_fill_(all_no_answ, -100)
 
         for i in range(overall_mask.size(0)):
-            q_num = sum(overall_mask[i]) # the true question number for this sampled context
+            q_num = sum(overall_mask[i])  # the true question number for this sampled context
 
-            target_s = answer_s[i, :q_num] # Size: q_num
+            target_s = answer_s[i, :q_num]  # Size: q_num
             target_e = answer_e[i, :q_num]
             target_c = answer_c[i, :q_num]
             target_no_answ = all_no_answ[i, :q_num]
 
             # single_loss is averaged across q_num
+            # default:true
             if self.opt['question_normalize']:
-                single_loss = F.binary_cross_entropy_with_logits(score_no_answ[i, :q_num], target_no_answ.float()) * q_num.item() / 8.0
-                single_loss = single_loss + F.cross_entropy(score_s[i, :q_num], target_s) * (q_num - sum(target_no_answ)).item() / 7.0
-                single_loss = single_loss + F.cross_entropy(score_e[i, :q_num], target_e) * (q_num - sum(target_no_answ)).item() / 7.0
+                single_loss = F.binary_cross_entropy_with_logits(score_no_answ[i, :q_num],
+                                                                 target_no_answ.float()) * q_num.item() / 8.0
+                single_loss = single_loss + F.cross_entropy(score_s[i, :q_num], target_s) * (
+                        q_num - sum(target_no_answ)).item() / 7.0
+                single_loss = single_loss + F.cross_entropy(score_e[i, :q_num], target_e) * (
+                        q_num - sum(target_no_answ)).item() / 7.0
             else:
                 single_loss = F.binary_cross_entropy_with_logits(score_no_answ[i, :q_num], target_no_answ.float()) \
-                            + F.cross_entropy(score_s[i, :q_num], target_s) + F.cross_entropy(score_e[i, :q_num], target_e)
+                              + F.cross_entropy(score_s[i, :q_num], target_s) + F.cross_entropy(score_e[i, :q_num],
+                                                                                                target_e)
 
             loss = loss + (single_loss / overall_mask.size(0))
         self.train_loss.update(loss.item(), overall_mask.size(0))
@@ -165,7 +180,7 @@ class QAModel(object):
             dialog_pred, dialog_noans = [], []
 
             for j in range(overall_mask.size(1)):
-                if overall_mask[i, j] == 0: # this dialog has ended
+                if overall_mask[i, j] == 0:  # this dialog has ended
                     break
 
                 dialog_noans.append(score_no_answ[i, j].item())
@@ -183,15 +198,15 @@ class QAModel(object):
             predictions.append(dialog_pred)
             no_ans_scores.append(dialog_noans)
 
-        return predictions, no_ans_scores # list of (list of strings), list of (list of floats)
+        return predictions, no_ans_scores  # list of (list of strings), list of (list of floats)
 
     # allow the evaluation embedding be larger than training embedding
     # this is helpful if we have pretrained word embeddings
-    def setup_eval_embed(self, eval_embed, padding_idx = 0):
+    def setup_eval_embed(self, eval_embed, padding_idx=0):
         # eval_embed should be a supermatrix of training embedding
         self.network.eval_embed = nn.Embedding(eval_embed.size(0),
                                                eval_embed.size(1),
-                                               padding_idx = padding_idx)
+                                               padding_idx=padding_idx)
         self.network.eval_embed.weight.data = eval_embed
         for p in self.network.eval_embed.parameters():
             p.requires_grad = False
@@ -237,7 +252,7 @@ class QAModel(object):
             'state_dict': {
                 'network': self.network.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
-                'updates': self.updates # how many updates
+                'updates': self.updates  # how many updates
             },
             'config': self.opt,
             'epoch': epoch

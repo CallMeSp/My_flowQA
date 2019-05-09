@@ -9,7 +9,7 @@ from torch.nn.parameter import Parameter
 from pytorch_pretrained_bert import TransfoXLModel
 from torch.autograd import Variable
 import logging
-import myDataUtils
+from MyIdea_v1 import myDataUtils
 import time
 
 logging.basicConfig(
@@ -253,7 +253,7 @@ class PositionalEncoding(nn.Module):
 
 
 class SelfAttLayer(nn.Module):
-    def __init__(self, data, N=6, head=8, ff_size=2048):
+    def __init__(self, dmodel, N=3, head=4, ff_size=2048):
         """Set docstring here.
 
         Parameters
@@ -270,7 +270,7 @@ class SelfAttLayer(nn.Module):
         super(SelfAttLayer, self).__init__()
         self.N = N
         self.head = head
-        self.d_model = data.size(-1)
+        self.d_model = dmodel
         self.ff_size = ff_size
         self.d_k = self.d_model // self.head
         self.c = copy.deepcopy

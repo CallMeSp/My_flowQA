@@ -1,5 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import re
 import sys
 import random
@@ -45,7 +46,8 @@ parser.add_argument('--do_not_save', action='store_true', help='don\'t save any 
 parser.add_argument('--save_for_predict', action='store_true')
 parser.add_argument('--seed', type=int, default=1023,
                     help='random seed for data shuffling, dropout, etc.')
-parser.add_argument('--cuda', type=bool, default=False,
+######################################################################
+parser.add_argument('--cuda', type=bool, default=True,
                     help='whether to use GPU acceleration.')
 # training
 parser.add_argument('-e', '--epoches', type=int, default=30)
@@ -102,7 +104,7 @@ parser.add_argument('--self_attention_opt', type=int, default=1)  # 0: no self a
 
 parser.add_argument('--deep_inter_att_do_similar', type=int, default=0)
 parser.add_argument('--deep_att_hidden_size_per_abstr', type=int, default=250)
-
+###################################################################
 parser.add_argument('--no_elmo', dest='use_elmo', action='store_false')
 parser.add_argument('--no_em', action='store_true')
 
@@ -162,7 +164,9 @@ def main():
 
     train, train_embedding, opt = load_train_data(opt)
     dev, dev_embedding, dev_answer = load_dev_data(opt)
-    # opt['num_features']=8
+    # opt['num_features']=4
+    # explicit_dialog_ctx=2
+    # use_dialog_act = False
     opt['num_features'] += args.explicit_dialog_ctx * (args.use_dialog_act * 3 + 2)  # dialog_act + previous answer
     if opt['use_elmo'] == False:
         opt['elmo_batch_size'] = 0

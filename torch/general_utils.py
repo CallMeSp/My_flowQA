@@ -435,12 +435,11 @@ class BatchGen_QuAC:
         for batch_i in range((self.context_num + self.batch_size - 1) // self.batch_size):
 
             batch_idx = idx_perm[self.batch_size * batch_i: self.batch_size * (batch_i + 1)]
-
+            # list len=bsz,每行是每个context的七个vector组成的tuple
             context_batch = [self.data['context'][i] for i in batch_idx]
             batch_size = len(context_batch)
-
+            # list len=7，每行是bsz个context对应部分的vector组成的tuple
             context_batch = list(zip(*context_batch))
-
             # Process Context Tokens
             context_len = max(len(x) for x in context_batch[0])
             if not self.eval:
@@ -463,10 +462,12 @@ class BatchGen_QuAC:
                 context_ent[i, :select_len] = torch.LongTensor(doc[:select_len])
 
             if self.precompute_elmo > 0:
+                # precompute_elmo(default) = 4
                 if batch_i % self.precompute_elmo == 0:
                     precompute_idx = idx_perm[
                                      self.batch_size * batch_i: self.batch_size * (batch_i + self.precompute_elmo)]
                     elmo_tokens = [self.data['context'][i][6] for i in precompute_idx]
+                    # context_cid = [bsz*precompute_elmo,max_len,50]
                     context_cid = batch_to_ids(elmo_tokens)
                 else:
                     context_cid = torch.LongTensor(1).fill_(0)
@@ -481,12 +482,13 @@ class BatchGen_QuAC:
             for first_QID in context_batch[5]:
                 i, question_seq = 0, []
                 while True:
-                    if first_QID + i >= len(qa_data) or qa_data[first_QID + i][0] != qa_data[first_QID][
-                        0]:  # their corresponding context ID is different
+                    if first_QID + i >= len(qa_data) or qa_data[first_QID + i][0] != qa_data[first_QID][0]:
+                        # their corresponding context ID is different
                         break
                     question_seq.append(first_QID + i)
                     question_len = max(question_len, len(qa_data[first_QID + i][1]))
                     i += 1
+                # 第i个context对应的questions id list在第i行
                 question_batch.append(question_seq)
                 question_num = max(question_num, i)
 
@@ -553,6 +555,7 @@ class BatchGen_QuAC:
                 answer.append(answer_pack)
 
             # Process Masks
+            # =0的是有内容的。=1的是<pad>
             context_mask = torch.eq(context_id, 0)
             question_mask = torch.eq(question_id, 0)
 
@@ -574,7 +577,6 @@ class BatchGen_QuAC:
                 overall_mask = overall_mask.pin_memory()
                 context_cid = context_cid.pin_memory()
                 question_cid = question_cid.pin_memory()
-
             yield (context_id, context_cid, context_feature, context_tag, context_ent, context_mask,
                    question_id, question_cid, question_mask, overall_mask,
                    answer_s, answer_e, answer_c,
