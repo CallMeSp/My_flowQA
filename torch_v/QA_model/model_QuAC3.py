@@ -1,14 +1,14 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import torch.nn as nn
 import numpy as np
 import logging
-
+from pytorch_pretrained_bert import BertTokenizer, BertModel, BertForMaskedLM
 from torch.nn import Parameter
 from torch.autograd import Variable
 from .utils import AverageMeter
-from .detail_model_v2 import FlowQA
+from .detail_model_v3 import FlowQA
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +53,10 @@ class QAModel(object):
             raise RuntimeError('Unsupported optimizer: %s' % opt['optimizer'])
         if state_dict:
             self.optimizer.load_state_dict(state_dict['optimizer'])
-        # fix_embeddings(default)=False
-        if opt['fix_embeddings']:
-            wvec_size = 0
-        else:
-            # tune_partial(default)=1000
-            # print(opt['vocab_size'], opt['tune_partial'], opt['embedding_dim'],
-            #       (opt['vocab_size'] - opt['tune_partial']) * opt['embedding_dim'])
-            # =89349 1000 300 26504700
-            wvec_size = (opt['vocab_size'] - opt['tune_partial']) * opt['embedding_dim']
-        self.total_param = sum([p.nelement() for p in parameters]) - wvec_size
+
+        self.total_param = sum([p.nelement() for p in parameters])
+
+
 
     def update(self, batch):
         # Train mode
@@ -71,7 +65,7 @@ class QAModel(object):
 
         # Transfer to GPU
         if self.opt['cuda']:
-            inputs = [e.cuda(non_blocking=True) for e in batch[:10]]
+            inputs = [e.cuda(non_blocking=True) for e in batch[:9]]
             # overall_mask:[bsz,max_q_num] =1 if 存在q
             overall_mask = batch[9].cuda(non_blocking=True)
 
@@ -79,7 +73,7 @@ class QAModel(object):
             answer_e = batch[11].cuda(non_blocking=True)
             answer_c = batch[12].cuda(non_blocking=True)
         else:
-            inputs = [e for e in batch[:10]]
+            inputs = [e for e in batch[:9]]
             overall_mask = batch[9]
 
             answer_s = batch[10]
@@ -92,10 +86,9 @@ class QAModel(object):
 
         # Compute loss and accuracies
         # elmo_lambda=0
-        loss = self.opt['elmo_lambda'] * (self.network.elmo.scalar_mix_0.scalar_parameters[0] ** 2
-                                          + self.network.elmo.scalar_mix_0.scalar_parameters[1] ** 2
-                                          + self.network.elmo.scalar_mix_0.scalar_parameters[
-                                              2] ** 2)  # ELMo L2 regularization
+
+        loss = 0
+
         all_no_answ = (answer_c == 0)
         answer_s.masked_fill_(all_no_answ, -100)  # ignore_index is -100 in F.cross_entropy
         answer_e.masked_fill_(all_no_answ, -100)

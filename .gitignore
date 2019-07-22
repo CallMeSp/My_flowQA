@@ -2,7 +2,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+MyIdea_v1/elmo
+MyIdea_v1/pretrained_model
+torch_v/glove
+toch_v/CoQA
 # C extensions
 *.so
 *.txt

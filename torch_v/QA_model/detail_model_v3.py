@@ -4,12 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from allennlp.modules.elmo import Elmo
 from allennlp.nn.util import remove_sentence_boundaries
-
+import pysnooper
 from . import layers
 import sys
-
+from pytorch_pretrained_bert import BertModel
 sys.path.append('../../MyIdea_v1')
-from MyIdea_v1 import myModel
 
 
 class FlowQA(nn.Module):
@@ -25,47 +24,17 @@ class FlowQA(nn.Module):
         layers.set_my_dropout_prob(opt['my_dropout_p'])
         layers.set_seq_dropout(opt['do_seq_dropout'])
 
-        if opt['use_wemb']:
-            # Word embeddings
-            self.embedding = nn.Embedding(opt['vocab_size'],
-                                          opt['embedding_dim'],
-                                          padding_idx=padding_idx)
-            if embedding is not None:
-                self.embedding.weight.data = embedding
-                # default:fix_embedding=Fales;tune_patial=1000;embedding.size(0)=89349
-                if opt['fix_embeddings'] or opt['tune_partial'] == 0:
-                    opt['fix_embeddings'] = True
-                    opt['tune_partial'] = 0
-                    for p in self.embedding.parameters():
-                        p.requires_grad = False
-                else:
-                    assert opt['tune_partial'] < embedding.size(0)
-                    fixed_embedding = embedding[opt['tune_partial']:]
-                    # a persistent buffer for the nn.Module
-                    # buffer的更新在forward中，optim.step只能更新nn.parameter类型的参数。
-                    self.register_buffer('fixed_embedding', fixed_embedding)
-                    self.fixed_embedding = fixed_embedding
-            embedding_dim = opt['embedding_dim']
-            doc_input_size += embedding_dim
-            que_input_size += embedding_dim
+        model = BertModel.from_pretrained('../MyIdea_v1/pretrained_model')
+        model.eval()
+        self.bert_hid_dim = 768
+        doc_input_size += self.bert_hid_dim
+        que_input_size += self.bert_hid_dim
+        if torch.cuda.is_available():
+            model = model.cuda()
+            print('bert model run in GPU')
         else:
-            opt['fix_embeddings'] = True
-            opt['tune_partial'] = 0
-        # default:CoVe_opt=1
-        if opt['CoVe_opt'] > 0:
-            self.CoVe = layers.MTLSTM(opt, embedding)
-            CoVe_size = self.CoVe.output_size
-            # CoVe size = 600
-            print('CoVe size:', CoVe_size)
-            doc_input_size += CoVe_size
-            que_input_size += CoVe_size
+            print('bert model run in CPU')
 
-        if opt['use_elmo']:
-            options_file = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json"
-            weight_file = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5"
-            self.elmo = Elmo(options_file, weight_file, 1, dropout=0)
-            doc_input_size += 1024
-            que_input_size += 1024
         if opt['use_pos']:
             self.pos_embedding = nn.Embedding(opt['pos_size'], opt['pos_dim'])
             print('pos_dim:', opt['pos_dim'])
@@ -77,10 +46,11 @@ class FlowQA(nn.Module):
         # default默认true
         if opt['do_prealign']:
             # default:embedding_dim=300,hidden=300
-            self.pre_align = layers.GetAttentionHiddens(embedding_dim, opt['prealign_hidden'],
+            self.pre_align = layers.GetAttentionHiddens(self.bert_hid_dim, opt['prealign_hidden'],
                                                         similarity_attention=True)
-            print('pre_align:', embedding_dim, opt['prealign_hidden'])
-            doc_input_size += embedding_dim
+            print('pre_align:', self.bert_hid_dim, opt['prealign_hidden'])
+            doc_input_size += self.bert_hid_dim
+
         if opt['no_em']:
             print('no_em_num_features:', opt['num_features'] - 3)
             doc_input_size += opt['num_features'] - 3
@@ -93,16 +63,37 @@ class FlowQA(nn.Module):
         doc_hidden_size, que_hidden_size = doc_input_size, que_input_size
         # Initially, the vector_sizes [doc, query] are 2252 1924
         print('Initially, the vector_sizes [doc, query] are', doc_hidden_size, que_hidden_size)
-        self.Wqac = nn.Linear(que_hidden_size * 2, 250)
-        self.CselfAttn = myModel.SelfAttLayer(doc_hidden_size)
-        self.QselfAttn = myModel.SelfAttLayer(que_hidden_size)
         # default = 125
         flow_size = opt['hidden_size']
 
+        # RNN document encoder
+        # arg1:input_size,arg2:hidden_size
+        self.doc_rnn1 = layers.StackedBRNN(doc_hidden_size, opt['hidden_size'], num_layers=1)
+        self.dialog_flow1 = layers.StackedBRNN(opt['hidden_size'] * 2, opt['hidden_size'], num_layers=1,
+                                               rnn_type=nn.GRU, bidir=False)
+        self.doc_rnn2 = layers.StackedBRNN(opt['hidden_size'] * 2 + flow_size, opt['hidden_size'],
+                                           num_layers=1)
+        self.dialog_flow2 = layers.StackedBRNN(opt['hidden_size'] * 2, opt['hidden_size'], num_layers=1,
+                                               rnn_type=nn.GRU, bidir=False)
+        doc_hidden_size = opt['hidden_size'] * 2
+
         # RNN question encoder
         self.question_rnn, que_hidden_size = layers.RNN_from_opt(que_hidden_size, opt['hidden_size'], opt,
-                                                                 num_layers=2, concat_rnn=opt['concat_rnn'],
-                                                                 add_feat=CoVe_size)
+                                                                 num_layers=2, concat_rnn=opt['concat_rnn'])
+
+        # Output sizes of rnn encoders
+        # After Input LSTM, the vector_sizes [doc, query] are [ 250 250 ] * 2
+        print('After Input LSTM, the vector_sizes [doc, query] are [', doc_hidden_size, que_hidden_size, '] * 2')
+        # Deep inter-attention
+        self.deep_attn = layers.DeepAttention(opt, abstr_list_cnt=2,
+                                              deep_att_hidden_size_per_abstr=opt['deep_att_hidden_size_per_abstr'],
+                                              do_similarity=opt['deep_inter_att_do_similar'],
+                                              word_hidden_size=self.bert_hid_dim, no_rnn=True)
+
+        self.deep_attn_rnn, doc_hidden_size = layers.RNN_from_opt(self.deep_attn.att_final_size + flow_size,
+                                                                  opt['hidden_size'], opt, num_layers=1)
+        self.dialog_flow3 = layers.StackedBRNN(doc_hidden_size, opt['hidden_size'], num_layers=1, rnn_type=nn.GRU,
+                                               bidir=False)
 
         # Question understanding and compression
         self.high_lvl_qrnn, que_hidden_size = layers.RNN_from_opt(que_hidden_size * 2, opt['hidden_size'], opt,
@@ -132,9 +123,6 @@ class FlowQA(nn.Module):
             que_hidden_size = opt['hidden_size']
 
         # Attention for span start/end
-        print('doc_hidden_size gsse', doc_hidden_size, que_hidden_size, opt,
-              opt['ptr_net_indep_attn'], opt["ptr_net_attn_type"],
-              opt['do_ptr_update'])
         self.get_answer = layers.GetSpanStartEnd(doc_hidden_size, que_hidden_size, opt,
                                                  opt['ptr_net_indep_attn'], opt["ptr_net_attn_type"],
                                                  opt['do_ptr_update'])
@@ -146,7 +134,8 @@ class FlowQA(nn.Module):
 
     # context_id, context_cid, context_feature, context_tag, context_ent, context_mask,
     # question_id, question_cid, question_mask
-    def forward(self, x1, x1_c, x1_f, x1_pos, x1_ner, x1_mask, x2_full, x2_c, x2_full_mask, overall_mask):
+    # @pysnooper.snoop(watch=('doc_hiddens.size()', 'x1_input.size()', 'x2_input.size()'))
+    def forward(self, x1, x1_c, x1_f, x1_pos, x1_ner, x1_mask, x2_full, x2_c, x2_full_mask):
         """Inputs:
         x1 = document word indices                                          [batch * len_d]
         x1_c = document char indices,elmo生成的，每个word长度50             [batch * len_d * len_w] or [1]
@@ -255,24 +244,69 @@ class FlowQA(nn.Module):
 
         x1_input = torch.cat(drnn_input_list, dim=2)
         x2_input = torch.cat(qrnn_input_list, dim=2)
-
         def expansion_for_doc(z):
             return z.unsqueeze(1).expand(z.size(0), x2_full.size(1), z.size(1), z.size(2)).contiguous().view(-1,
                                                                                                              z.size(1),
                                                                                                              z.size(2))
+        # [bsz,len,d]==>[qnum,dlen,d]
+        x1_emb_expand = expansion_for_doc(x1_emb)
+        x1_cove_high_expand = expansion_for_doc(x1_cove_high)
+        # print('x1,x2', x1_input.size(), x2_input.size(), x1_emb.size(), x1_cove_high.size(), x1_emb_expand.size(),
+        #       x1_cove_high_expand.size())
 
-        def genTagsfromoverallmask(ovm):
-            QCTags = torch.LongTensor(overall_mask.size(0) * overall_mask.size(-1)).fill_(0)
-            s = 0
-            for i, row in enumerate(ovm):
-                QCTags[s:s + ovm[i].sum().item()] = i
-                s += ovm[i].sum().item()
-            return QCTags
 
-        def test(c, ques, tags):
-            QAC = myModel.QuestionAwareContextLayer(contexts=c, questions=ques, tags=tags).forward()
-            QAC = self.Wqac(QAC)
-            return QAC
+        # x1_elmo_expand = expansion_for_doc(x1_elmo)
+        if self.opt['no_em']:
+            x1_f = x1_f[:, :, :, 3:]
+        x1_input = torch.cat([expansion_for_doc(x1_input), x1_f.view(-1, x1_f.size(-2), x1_f.size(-1))], dim=2)
+        x1_mask = x1_full_mask.view(-1, x1_full_mask.size(-1))
+        #############################################################################################################################
+        # 在这里得到question-specific Context representation
+        '''
+        即C_i^0
+        '''
+        if self.opt['do_prealign']:
+            x1_atten = self.pre_align(x1_emb_expand, x2_emb, x2_mask)
+            x1_input = torch.cat([x1_input, x1_atten], dim=2)
+
+        # === Start processing the dialog ===
+        # cur_h: [batch_size * max_qa_pair, context_length, hidden_state]
+        # flow : fn (rnn)
+        # x1_full: [batch_size, max_qa_pair, context_length]
+        def flow_operation(cur_h, flow):
+            flow_in = cur_h.transpose(0, 1).view(x1_full.size(2), x1_full.size(0), x1_full.size(1), -1)
+            flow_in = flow_in.transpose(0, 2).contiguous().view(x1_full.size(1), x1_full.size(0) * x1_full.size(2),
+                                                                -1).transpose(0, 1)
+            # [bsz * context_length, max_qa_pair, hidden_state]
+            flow_out = flow(flow_in)
+            # [bsz * context_length, max_qa_pair, flow_hidden_state_dim (hidden_state/2)]
+            if self.opt['no_dialog_flow']:
+                flow_out = flow_out * 0
+
+            flow_out = flow_out.transpose(0, 1).view(x1_full.size(1), x1_full.size(0), x1_full.size(2), -1).transpose(0,
+                                                                                                                      2).contiguous()
+            flow_out = flow_out.view(x1_full.size(2), x1_full.size(0) * x1_full.size(1), -1).transpose(0, 1)
+            # [bsz * max_qa_pair, context_length, flow_hidden_state_dim]
+            return flow_out
+
+        # Encode document with RNN
+        doc_abstr_ls = []
+        # \hat{C_i^0}
+        doc_hiddens = self.doc_rnn1(x1_input, x1_mask)
+        doc_hiddens_flow = flow_operation(doc_hiddens, self.dialog_flow1)
+
+        doc_abstr_ls.append(doc_hiddens)
+        # rnn()里面的即为C_i^1
+        # print('ci1', torch.cat((doc_hiddens, doc_hiddens_flow, x1_cove_high_expand), dim=2).size())
+        doc_hiddens = self.doc_rnn2(torch.cat((doc_hiddens, doc_hiddens_flow, x1_cove_high_expand), dim=2), x1_mask)
+        doc_hiddens_flow = flow_operation(doc_hiddens, self.dialog_flow2)
+        # 得到C_i^2
+        doc_abstr_ls.append(doc_hiddens)
+
+        # with open('flow_bef_att.pkl', 'wb') as output:
+        #    pickle.dump(doc_hiddens_flow, output, pickle.HIGHEST_PROTOCOL)
+        # while(1):
+        #    pass
 
         # Encode question with RNN
         _, que_abstr_ls = self.question_rnn(x2_input, x2_mask, return_list=True, additional_x=x2_cove_high)
@@ -281,7 +315,29 @@ class FlowQA(nn.Module):
         question_hiddens = self.high_lvl_qrnn(torch.cat(que_abstr_ls, 2), x2_mask)
         que_abstr_ls += [question_hiddens]
 
-        doc_hiddens = test(x1_input, x2_input, genTagsfromoverallmask(overall_mask))
+        # Main Attention Fusion Layer
+        doc_info = self.deep_attn([torch.cat([x1_emb_expand, x1_cove_high_expand], 2)], doc_abstr_ls,
+                                  [torch.cat([x2_emb, x2_cove_high], 2)], que_abstr_ls, x1_mask, x2_mask)
+
+        doc_hiddens = self.deep_attn_rnn(torch.cat((doc_info, doc_hiddens_flow), dim=2), x1_mask)
+
+        # C_i^3
+        doc_hiddens_flow = flow_operation(doc_hiddens, self.dialog_flow3)
+
+        doc_abstr_ls += [doc_hiddens]
+
+        # Self Attention Fusion Layer
+        x1_att = torch.cat(doc_abstr_ls, 2)
+
+        if self.opt['self_attention_opt'] > 0:
+            highlvl_self_attn_hiddens = self.highlvl_self_att(x1_att, x1_att, x1_mask, x3=doc_hiddens,
+                                                              drop_diagonal=True)
+            doc_hiddens = self.high_lvl_crnn(
+                torch.cat([doc_hiddens, highlvl_self_attn_hiddens, doc_hiddens_flow], dim=2), x1_mask)
+        elif self.opt['self_attention_opt'] == 0:
+            doc_hiddens = self.high_lvl_crnn(torch.cat([doc_hiddens, doc_hiddens_flow], dim=2), x1_mask)
+
+        doc_abstr_ls += [doc_hiddens]
 
         # Merge the question hidden vectors
         q_merge_weights = self.self_attn(question_hiddens, x2_mask)
@@ -290,7 +346,10 @@ class FlowQA(nn.Module):
             question_avg_hidden = self.hier_query_rnn(question_avg_hidden.view(x1_full.size(0), x1_full.size(1), -1))
             question_avg_hidden = question_avg_hidden.contiguous().view(-1, question_avg_hidden.size(-1))
         # Get Start, End span
-        x1_mask = x1_full_mask.view(-1, x1_full_mask.size(-1))
+        # print(doc_hiddens.size())
+        # print(question_avg_hidden.size())
+        # print(x1_mask.size())
+
         start_scores, end_scores = self.get_answer(doc_hiddens, question_avg_hidden, x1_mask)
         all_start_scores = start_scores.view_as(x1_full)  # batch x q_num x len_d
         all_end_scores = end_scores.view_as(x1_full)  # batch x q_num x len_d
@@ -300,4 +359,5 @@ class FlowQA(nn.Module):
         class_scores = self.ans_type_prediction(doc_avg_hidden, question_avg_hidden)
         all_class_scores = class_scores.view(x1_full.size(0), x1_full.size(1), -1)  # batch x q_num x class_num
         all_class_scores = all_class_scores.squeeze(-1)  # when class_num = 1
+
         return all_start_scores, all_end_scores, all_class_scores

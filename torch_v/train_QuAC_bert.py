@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import re
 import sys
 import random
@@ -14,7 +14,7 @@ import torch
 import msgpack
 import pandas as pd
 import numpy as np
-from QA_model.model_QuAC import QAModel
+from QA_model.model_QuAC3 import QAModel
 from general_utils import find_best_score_and_thresh, BatchGen_QuAC
 
 parser = argparse.ArgumentParser(
@@ -41,7 +41,7 @@ parser.add_argument('--MTLSTM_path', default='glove/MT-LSTM.pth')
 
 # 这个action的意义是：默认为True，如果在命令中加了这个参数（不用赋值），就为false
 # dest 是为args的参数取一个别名，在命令行中可以用"--"或者"-"的名字来赋值，但是在程序中只能通过dest的名字来获取。
-parser.add_argument('--save_all', dest='save_best_only', action='store_false', help='save all models.')
+parser.add_argument('--save_all', dest='save_best_only', action='store_true', help='save all models.')
 parser.add_argument('--do_not_save', action='store_true', help='don\'t save any model')
 parser.add_argument('--save_for_predict', action='store_true')
 parser.add_argument('--seed', type=int, default=1023,
@@ -50,9 +50,9 @@ parser.add_argument('--seed', type=int, default=1023,
 parser.add_argument('--cuda', type=bool, default=True,
                     help='whether to use GPU acceleration.')
 # training
-parser.add_argument('-e', '--epoches', type=int, default=30)
-parser.add_argument('-bs', '--batch_size', type=int, default=3)
-parser.add_argument('-ebs', '--elmo_batch_size', type=int, default=12)
+parser.add_argument('-e', '--epoches', type=int, default=8)
+parser.add_argument('-bs', '--batch_size', type=int, default=2)
+parser.add_argument('-ebs', '--elmo_batch_size', type=int, default=6)
 parser.add_argument('-rs', '--resume', default='',
                     help='previous model pathname. '
                          'e.g. "models/checkpoint_epoch_11.pt"')
@@ -98,7 +98,7 @@ parser.add_argument('--rnn_layers', type=int, default=1, help="Default number of
 parser.add_argument('--rnn_type', default='lstm',
                     help='supported types: rnn, gru, lstm')
 parser.add_argument('--concat_rnn', dest='concat_rnn', action='store_true')
-
+##################################################################
 parser.add_argument('--hidden_size', type=int, default=125)
 parser.add_argument('--self_attention_opt', type=int, default=1)  # 0: no self attention
 
@@ -162,8 +162,9 @@ def main():
     log.info('[program starts.]')
     opt = vars(args)  # changing opt will change args
 
-    train, train_embedding, opt = load_train_data(opt)
-    dev, dev_embedding, dev_answer = load_dev_data(opt)
+    train, opt = load_train_data(opt)
+    dev, dev_answer = load_dev_data(opt)
+
     # opt['num_features']=4
     # explicit_dialog_ctx=2
     # use_dialog_act = False
@@ -178,14 +179,14 @@ def main():
         if args.resume_options:
             opt = checkpoint['config']
         state_dict = checkpoint['state_dict']
-        model = QAModel(opt, train_embedding, state_dict)
+        model = QAModel(opt, state_dict=state_dict)
         epoch_0 = checkpoint['epoch'] + 1
         for i in range(checkpoint['epoch']):
             random.shuffle(list(range(len(train))))  # synchronize random seed
         if args.reduce_lr:
             lr_decay(model.optimizer, lr_decay=args.reduce_lr)
     else:
-        model = QAModel(opt, train_embedding)
+        model = QAModel(opt)
         epoch_0 = 1
 
     if args.pretrain:
@@ -194,7 +195,6 @@ def main():
 
         model.get_pretrain(state_dict)
 
-    model.setup_eval_embed(dev_embedding)
     log.info("[dev] Total number of params: {}".format(model.total_param))
 
     if args.cuda:
@@ -221,6 +221,14 @@ def main():
                                 use_dialog_act=args.use_dialog_act,
                                 precompute_elmo=args.elmo_batch_size // args.batch_size)
         start = datetime.now()
+        # maxlen = 0
+        # for i, batch in enumerate(batches):
+        #     for item in batch:
+        #         context_id = batch[0]
+        #         if (len(context_id) > maxlen):
+        #             maxlen = len(context_id)
+        # print('maxlen:', maxlen)
+        # exit(0)
         for i, batch in enumerate(batches):
             model.update(batch)
             if i % args.log_per_updates == 0:
@@ -272,15 +280,7 @@ def lr_decay(optimizer, lr_decay):
 
 
 def load_train_data(opt):
-    with open(os.path.join(args.train_dir, 'train_meta.msgpack'), 'rb') as f:
-        # msgpack用起来像json，但是却比json快，并且序列化以后的数据长度更小，
-        # 言外之意，使用msgpack不仅序列化和反序列化的速度快，数据传输量也比json格式小
-        meta = msgpack.load(f, encoding='utf8')
-    embedding = torch.Tensor(meta['embedding'])
-    opt['vocab_size'] = embedding.size(0)
-    opt['embedding_dim'] = embedding.size(1)
-
-    with open(os.path.join(args.train_dir, 'train_data.msgpack'), 'rb') as f:
+    with open(os.path.join(args.train_dir, 'train_data_bybert.msgpack'), 'rb') as f:
         data = msgpack.load(f, encoding='utf8')
     # data_orig = pd.read_csv(os.path.join(args.train_dir, 'train.csv'))
 
@@ -305,16 +305,12 @@ def load_train_data(opt):
             data['answer'],
             data['question_tokenized']))
     }
-    return train, embedding, opt
+    return train, opt
 
 
 def load_dev_data(opt):  # can be extended to true test set
-    with open(os.path.join(args.dev_dir, 'dev_meta.msgpack'), 'rb') as f:
-        meta = msgpack.load(f, encoding='utf8')
-    embedding = torch.Tensor(meta['embedding'])
-    assert opt['embedding_dim'] == embedding.size(1)
 
-    with open(os.path.join(args.dev_dir, 'dev_data.msgpack'), 'rb') as f:
+    with open(os.path.join(args.dev_dir, 'dev_data_bybert.msgpack'), 'rb') as f:
         data = msgpack.load(f, encoding='utf8')
     # data_orig = pd.read_csv(os.path.join(args.dev_dir, 'dev.csv'))
 
@@ -346,7 +342,7 @@ def load_dev_data(opt):  # can be extended to true test set
             dev_answer.append([])
         dev_answer[CID].append(data['all_answer'][i])
 
-    return dev, embedding, dev_answer
+    return dev, dev_answer
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import json
 import torch
 import argparse
@@ -11,7 +11,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-QuACdata_path = '../torch/QuAC_data/train.json'
+QuACdata_path = '../torch_v/QuAC_data/train.json'
 
 
 def readTrainjson(path):
@@ -61,7 +61,7 @@ def paddingText(rawlist, padding='<PADDING>'):
     return curlist
 
 
-tokenizer = TransfoXLTokenizer.from_pretrained('pretrained_model')
+tokenizer = TransfoXLTokenizer.from_pretrained('./pretrained_model')
 
 
 def tokens2ids(text):
@@ -78,14 +78,14 @@ def tokens2ids(text):
     return tokens_tensor
 
 
-
+model = TransfoXLModel.from_pretrained('./pretrained_model')
+model.eval()
+if torch.cuda.is_available():
+    model = model.cuda()
 
 
 def ids2embeddings(ids):
-    model = TransfoXLModel.from_pretrained('./pretrained_model')
-    model.eval()
     if torch.cuda.is_available():
-        model = model.cuda()
         ids = ids.cuda()
     with torch.no_grad():
         hidden_state, mems = model(ids)
@@ -131,11 +131,13 @@ def genBatch(mode='train', bsz=2, ismasked=True):
 
 
 if __name__ == '__main__':
-    # contexts, ques, ans, tags, contextsLength, quesLength, ansLength = readTrainjson(QuACdata_path)
+    contexts, ques, ans, tags, contextsLength, quesLength, ansLength = readTrainjson(QuACdata_path)
+
     contexts = genBatch()
     for i in range(10):
         contextbatch = next(contexts)[0]
         contextbatch = tokens2ids(contextbatch)
+        print(contextbatch)
     exit(0)
     contexts = tokens2ids(contexts)
     ques = tokens2ids(ques).size()

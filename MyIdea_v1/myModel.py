@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N)
 class Encoder(nn.Module):
-    def __init__(self, layer, N):
+    def __init__(self, layer, N, opt):
         """Set docstring here.
 
         Parameters
@@ -33,8 +33,34 @@ class Encoder(nn.Module):
         经过N层layer得到的vector:[bsz,seq_len,d_model]
         """
         super(Encoder, self).__init__()
+        self.usegpu = opt['cuda']
         self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
+        self.norm = LayerNorm(layer.size, opt)
+
+    def forward(self, x, mask):
+        # pass the input (and mask) through each layer in turn
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+
+
+class Encoder_v2(nn.Module):
+    def __init__(self, layer, N, opt):
+        """Set docstring here.
+
+        Parameters
+        ----------
+        layer: 实际的encoder层
+        N: 层数
+
+        Returns
+        -------
+        经过N层layer得到的vector:[bsz,seq_len,d_model]
+        """
+        super(Encoder_v2, self).__init__()
+        self.usegpu = opt['cuda']
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(opt['hidden_size'] * 2, opt)
 
     def forward(self, x, mask):
         # pass the input (and mask) through each layer in turn
@@ -48,10 +74,14 @@ class LayerNorm(nn.Module):
     Construct a layernorm module
     """
 
-    def __init__(self, features, eps=1e-6):
+    def __init__(self, features, opt, eps=1e-6):
         super(LayerNorm, self).__init__()
+        self.usegpu = opt['cuda']
         self.a_2 = nn.Parameter(torch.ones(features))
         self.b_2 = nn.Parameter(torch.zeros(features))
+        if self.usegpu:
+            self.a_2 = nn.Parameter(torch.ones(features).cuda())
+            self.b_2 = nn.Parameter(torch.zeros(features).cuda())
         self.eps = eps
 
     def forward(self, x):
@@ -68,9 +98,9 @@ class SublayerConnection(nn.Module):
     Note for code simplicity the norm is first as opposed to last.
     """
 
-    def __init__(self, size, dropout):
+    def __init__(self, size, dropout, opt):
         super(SublayerConnection, self).__init__()
-        self.norm = LayerNorm(size)
+        self.norm = LayerNorm(size, opt)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, sublayer):
@@ -89,7 +119,7 @@ def clones(module, N):
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, size, self_attn, feed_forward, dropout=0.1):
+    def __init__(self, size, self_attn, feed_forward, opt, dropout=0.1):
         """Set docstring here.
 
         Parameters
@@ -104,15 +134,48 @@ class EncoderLayer(nn.Module):
         输出应该size维持不变
         """
         super(EncoderLayer, self).__init__()
+        self.usegpu = opt['cuda']
         self.self_attn = self_attn
         self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.sublayer = clones(SublayerConnection(size, dropout, opt), 2)
+        if self.usegpu:
+            self.sublayer = self.sublayer.cuda()
         self.size = size
 
     def forward(self, x, mask):
         # follow Figure 1(left) for connections
         x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
         return self.sublayer[1](x, self.feed_forward)
+
+
+class EncoderLayer_v2(nn.Module):
+    def __init__(self, size, self_attn, feed_forward, opt, dropout=0.1):
+        """Set docstring here.
+
+        Parameters
+        ----------
+        size: 一般为d_model
+        self_attn: multihead-selfAttention层
+        feed_forward: 前馈网络层
+        dropout: default=0.1
+
+        Returns
+        -------
+        输出应该size维持不变
+        """
+        super(EncoderLayer_v2, self).__init__()
+        self.usegpu = opt['cuda']
+        self.self_attn = self_attn
+        self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout, opt), 2)
+        if self.usegpu:
+            self.sublayer = self.sublayer.cuda()
+        self.size = size
+
+    def forward(self, x, mask):
+        # follow Figure 1(left) for connections
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
+        return self.feed_forward(x)
 
 
 def subsequent_mask(size):
@@ -236,24 +299,25 @@ class PositionalEncoding(nn.Module):
         """
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
-
+        edge = d_model // 2 if d_model % 2 == 0 else d_model // 2
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1).float()
-        div_term = torch.exp(
-            -(torch.arange(0., d_model, 2) / d_model) * math.log(10000.0))
+        div_term = torch.exp(-(torch.arange(0., d_model, 2) / d_model) * math.log(10000.0))
         pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)[:, 0:edge]
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
+        # print('before:', x.size())
         x = x + Variable(self.pe[:, :x.size(-2)], requires_grad=False)
+        # print('after:', x.size())
         return self.dropout(x)
 
 
 class SelfAttLayer(nn.Module):
-    def __init__(self, dmodel, N=3, head=4, ff_size=2048):
+    def __init__(self, dmodel, opt, N=2, head=4, ff_size=2048):
         """Set docstring here.
 
         Parameters
@@ -268,6 +332,7 @@ class SelfAttLayer(nn.Module):
         shape和输入相同
         """
         super(SelfAttLayer, self).__init__()
+        self.usegpu = opt['cuda']
         self.N = N
         self.head = head
         self.d_model = dmodel
@@ -277,33 +342,111 @@ class SelfAttLayer(nn.Module):
         self.selfattn = MultiHeadedAttention(self.head, self.d_model)
         self.ff = PositionwiseFeedForward(self.d_model, self.ff_size)
         self.position = PositionalEncoding(self.d_model)
+        if self.usegpu:
+            self.selfattn = self.selfattn.cuda()
+            self.ff = self.ff.cuda()
+            self.position = self.position.cuda()
         self.encoder = Encoder(
-            EncoderLayer(self.d_model, self.selfattn, self.ff), self.N)
+            EncoderLayer(self.d_model, self.selfattn, self.ff, opt), self.N, opt)
+
+    def forward(self, data):
+        return self.encoder(self.position(data), mask=None)
+
+
+# FFN(x)=max(0,xW1+b1)W2+b2
+class PositionwiseFeedForward_v2(nn.Module):
+    # Implements FFN equation.
+    def __init__(self, d_model, d_ff, d_output, dropout=0.1):
+        """Set docstring here.
+
+        Parameters
+        ----------
+        d_model: 原始word的embeddingsize或者一个encoder的输出维度或者multi-head-SelfAtt的输出维度
+        d_ff: hidden层的维度
+        dropout=0.1:
+
+        Returns
+        -------
+        返回还是d_model维度的
+        [bsz,seq_len,d_model]
+        """
+        super(PositionwiseFeedForward_v2, self).__init__()
+        # self.w_1 = nn.Linear(d_model, d_ff)
+        # self.w_2 = nn.Linear(d_ff, d_output)
+        self.w_3 = nn.Linear(d_model, d_output)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.w_3(x)
+
+
+class SelfAttLayerFF(nn.Module):
+    def __init__(self, dmodel, opt, N=6, head=2, ff_size=200):
+        """Set docstring here.
+
+        Parameters
+        ----------
+        data: [bsz,seq_len,d_model]
+        N: 叠加的层数default=6
+        head: multihead的头数
+        ff_size:  FFN的隐藏层单元数
+
+        Returns
+        -------
+        shape和输入相同
+        """
+        super(SelfAttLayerFF, self).__init__()
+        self.usegpu = opt['cuda']
+        self.N = N
+        self.head = head
+        self.d_model = dmodel
+        self.ff_size = ff_size
+        self.d_k = self.d_model // self.head
+        self.c = copy.deepcopy
+        self.d_output = opt['hidden_size'] * 2
+        self.selfattn = MultiHeadedAttention(self.head, self.d_model)
+        self.ff = PositionwiseFeedForward_v2(self.d_model, self.ff_size, self.d_output)
+        self.position = PositionalEncoding(self.d_model)
+        if self.usegpu:
+            self.selfattn = self.selfattn.cuda()
+            self.ff = self.ff.cuda()
+            self.position = self.position.cuda()
+        self.encoder = Encoder_v2(
+            EncoderLayer_v2(self.d_model, self.selfattn, self.ff, opt), self.N, opt)
 
     def forward(self, data):
         return self.encoder(self.position(data), mask=None)
 
 
 class QuestionFlowLayer(nn.Module):
-    def __init__(self, questions, mode='onlyQ'):
+    def __init__(self, opt, mode='onlyQ'):
         """
         :param questions: [bsz?,max_len,d_model]
         :param mode:选择进行only question flow 还是answer-aware question flow
         :return:[bsz?,max_len,2*d_model]
         """
         super(QuestionFlowLayer, self).__init__()
-        self.questions = questions
+        self.usegpu = opt['cuda']
+        # self.questions = questions
         self.mode = mode
-        self.d_model = questions.size(-1)
-        self.result = torch.zeros(questions.size())
-        self.question_num = questions.size(-3)
+        # self.d_model = questions.size(-1)
+        # self.result = torch.zeros(questions.size())
+        # if self.usegpu:
+        #     # self.questions = self.questions.cuda()
+        #     self.result = self.result.cuda()
+        # self.question_num = questions.size(-3)
+        #
+        # self.result[0] = questions[0]
+        # for i in range(1, self.question_num):
+        #     self.result[i] = questions[:i].mean(0)
 
-        self.result[0] = questions[0]
-        for i in range(1, self.question_num):
-            self.result[i] = questions[:i].mean(0)
-
-    def forward(self):
-        return torch.cat((self.questions, self.result), dim=-1)
+    def forward(self, questions):
+        avgques = torch.zeros(questions.size())
+        if self.usegpu:
+            avgques = avgques.cuda()
+        for i in range(1, questions.size(0)):
+            avgques[i] = questions[:i].mean(0)
+        return torch.cat((questions, avgques), dim=-1)
 
 
 class AttentionScore(nn.Module):
@@ -311,19 +454,20 @@ class AttentionScore(nn.Module):
     sij = Relu(Wx1)DRelu(Wx2)
     """
 
-    def __init__(self, x1, x2, attention_hidden_size, similarity_score=False):
+    def __init__(self, x1_d, x2_d, attention_hidden_size, opt, similarity_score=False):
         super(AttentionScore, self).__init__()
-        self.linear1 = nn.Linear(
-            x1.size(-1), attention_hidden_size, bias=False)
-        self.linear2 = nn.Linear(
-            x2.size(-1), attention_hidden_size, bias=False)
+        self.usegpu = opt['cuda']
+        self.linear1 = nn.Linear(x1_d, attention_hidden_size, bias=False)
+        self.linear2 = nn.Linear(x2_d, attention_hidden_size, bias=False)
         if similarity_score:
-            self.linear_final = Parameter(
-                torch.ones(1, 1, 1) / (attention_hidden_size ** 0.5),
-                requires_grad=False)
+            self.linear_final = Parameter(torch.ones(1, 1, 1) / (attention_hidden_size ** 0.5), requires_grad=False)
         else:
-            self.linear_final = Parameter(
-                torch.ones(1, 1, attention_hidden_size), requires_grad=True)
+            self.linear_final = Parameter(torch.ones(1, 1, attention_hidden_size), requires_grad=True)
+
+        if self.usegpu:
+            self.linear1 = self.linear1.cuda()
+            self.linear2 = self.linear2.cuda()
+            # self.linear_final = self.linear_final.cuda()
 
     def forward(self, x1, x2):
         """
@@ -333,10 +477,8 @@ class AttentionScore(nn.Module):
         """
         # x1 = dropout(x1, p=my_dropout_p, training=self.training)
         # x2 = dropout(x2, p=my_dropout_p, training=self.training)
-        x1_rep = self.linear1(x1.contiguous().view(-1, x1.size(-1))).view(
-            x1.size(0), x1.size(1), -1)
-        x2_rep = self.linear2(x2.contiguous().view(-1, x2.size(-1))).view(
-            x2.size(0), x2.size(1), -1)
+        x1_rep = self.linear1(x1.contiguous().view(-1, x1.size(-1))).view(x1.size(0), x1.size(1), -1)
+        x2_rep = self.linear2(x2.contiguous().view(-1, x2.size(-1))).view(x2.size(0), x2.size(1), -1)
 
         x1_rep = F.relu(x1_rep)
         x2_rep = F.relu(x2_rep)
@@ -349,7 +491,7 @@ class AttentionScore(nn.Module):
 
 
 class AwareIntegration(nn.Module):
-    def __init__(self, context, questions):
+    def __init__(self, AttentionScoreLayer, opt):
         """
         实现对单一的context和它对应的questions进行integration
         :param context:[c_max_len,c_emb]
@@ -357,27 +499,25 @@ class AwareIntegration(nn.Module):
         :return:[q_num,c_max_lem.q_emb]
         """
         super(AwareIntegration, self).__init__()
+        self.usegpu = opt['cuda']
         # reshape to [1,c_max_len,c_emb]
-        self.context = context.unsqueeze(0)
-        self.questions = questions
-        attention_hidden_size = 2 * context.size(-1)
-        self.scoreLayer = AttentionScore(self.context, self.questions,
-                                         attention_hidden_size)
-        self.questionsAwareContexts = torch.ones(
-            len(questions), context.size(0), questions.size(-1))
+        # attention_hidden_size = 2 * context.size(-1)
+        # self.scoreLayer = AttentionScore(self.context, self.questions, attention_hidden_size)
+        self.scoreLayer = AttentionScoreLayer
 
-    def forward(self):
-        for i in range(len(self.questions)):
-            question = self.questions[i].unsqueeze(0)
-            score = self.scoreLayer(self.context, question)
-            questionAwareContext = F.softmax(
-                score, dim=-1).bmm(question).squeeze(0)
-            self.questionsAwareContexts[i] = questionAwareContext
-        return self.questionsAwareContexts
+    def forward(self, context, questions):
+        questionsAwareContexts = torch.ones(len(questions), context.size(0), questions.size(-1))
+        context = context.unsqueeze(0)
+        for i in range(len(questions)):
+            question = questions[i].unsqueeze(0)
+            score = self.scoreLayer(context, question)
+            questionAwareContext = F.softmax(score, dim=-1).bmm(question).squeeze(0)
+            questionsAwareContexts[i] = questionAwareContext
+        return questionsAwareContexts
 
 
 class QuestionAwareContextLayer(nn.Module):
-    def __init__(self, contexts, questions, tags, mode='onlyQ'):
+    def __init__(self, AwareIntegrationLayer, opt, mode='onlyQ'):
         """
         :param contexts:[bsz,c_max_len,c_emb]
         :param questions:[q_num,q_max_len,q_emb] 原始的，没有经过before-aware的
@@ -386,25 +526,42 @@ class QuestionAwareContextLayer(nn.Module):
         :return:[q_num,c_max_len,2 * q_emb]
         """
         super(QuestionAwareContextLayer, self).__init__()
-        self.contexts = contexts
-        self.questions = questions
-        self.tags = tags
+        self.opt = opt
+        self.usegpu = opt['cuda']
+        self.QFlowlayer = QuestionFlowLayer(opt)
+        self.AwareIntegrationLayer = AwareIntegrationLayer
+        if self.usegpu:
+            self.QFlowlayer = self.QFlowlayer.cuda()
 
-    def forward(self):
-        aware_contexts = torch.Tensor(
-            len(self.questions), self.contexts.size(-2),
-            self.questions.size(-1) * 2)
+    def forward(self, contexts, questions, tags):
         start = 0
-        for i in range(len(self.contexts)):
-            cur_context_que = self.questions[self.tags == i]
-            before_aware_questions = QuestionFlowLayer(
-                cur_context_que).forward()
-            cur_aware_context = AwareIntegration(self.contexts[i],
-                                                 before_aware_questions)
-            aware_contexts[start:start +
-                                 len(cur_context_que)] = cur_aware_context.forward()
-            start += len(cur_context_que)
+        if self.usegpu:
+            aware_contexts = torch.Tensor(questions.size(0), contexts.size(-2), questions.size(-1) * 2).cuda()
+        else:
+            aware_contexts = torch.Tensor(questions.size(0), contexts.size(-2), questions.size(-1) * 2)
+
+        for i in range(contexts.size(0)):
+            cur_context_que = questions[tags == i]
+            if self.usegpu:
+                cur_aware_context = self.AwareIntegrationLayer(contexts[i],
+                                                               self.QFlowlayer(cur_context_que)).cuda()
+                aware_contexts[start:start + len(cur_context_que)] = cur_aware_context
+                start += len(cur_context_que)
+            else:
+                cur_aware_context = self.AwareIntegrationLayer(contexts[i],
+                                                               self.QFlowlayer(cur_context_que))
+                aware_contexts[start:start + len(cur_context_que)] = cur_aware_context
+                start += len(cur_context_que)
+
         return aware_contexts
+
+
+class Verifier(nn.Module):
+    def __init__(self, answerr_sent, ques, answers, mode='2'):
+        pass
+
+    def forward(self, *input):
+        pass
 
 
 def test():
@@ -442,11 +599,26 @@ def test():
 if __name__ == '__main__':
     print(__name__)
     # # selfAttnLayer test
-    # testdata = torch.Tensor(2, 3000, 2048)
-    # ff = PositionwiseFeedForward(2048, 2048)
-    # SALayer = SelfAttLayer(ff(testdata), 1)
-    # print(SALayer.forward(testdata).size())
+    # opt = {}
+    # opt['cuda'] = True
+    # opt['hidden_size'] = 125
+    # testdata = torch.Tensor(20, 550, 2252).cuda()
+    # SALayer = SelfAttLayerFF(2252, opt)
+    # parameters = [p for p in SALayer.parameters() if p.requires_grad]
+    # x = sum([p.nelement() for p in parameters])
+    # print(SALayer.forward(testdata).size(), x)
 
+    # # QuestionAwareContextLayer test
+    # c = torch.from_numpy(np.random.rand(3, 5, 6)).float().cuda()
+    # q = torch.from_numpy(np.random.rand(7, 7, 9)).float().cuda()
+    # qtags = torch.IntTensor([0, 0, 1, 1, 1, 2, 2])
+    # QAC = QuestionAwareContextLayer(contexts=c, questions=q, tags=qtags, opt=opt)
+    # QAC = QAC().cuda()
+    # print(QAC.is_cuda)
+    # Wqac = nn.Linear(18, 10)
+    # if opt['cuda']:
+    #     Wqac = Wqac.cuda()
+    # print(Wqac(QAC))
     # # QuestionFlow Attn Test
     # x = torch.from_numpy(np.random.randint(10, size=[64, 2000, 2000])).float()
     # qf = QuestionFlowLayer(x)
@@ -458,5 +630,7 @@ if __name__ == '__main__':
     # qtags = torch.IntTensor([0, 0, 1, 1, 1, 2, 2])
     # QAC = QuestionAwareContextLayer(contexts=c, questions=q, tags=qtags)
     # print(QAC.forward().size())
-
-    test()
+    dmodel = 975
+    testdata = torch.Tensor(20, 550, dmodel)
+    pe = PositionalEncoding(dmodel)
+    print(pe(testdata))

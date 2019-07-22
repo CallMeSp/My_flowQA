@@ -4,12 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from allennlp.modules.elmo import Elmo
 from allennlp.nn.util import remove_sentence_boundaries
-
+import pysnooper
 from . import layers
 import sys
 
 sys.path.append('../../MyIdea_v1')
-from MyIdea_v1 import myModel
 
 
 class FlowQA(nn.Module):
@@ -61,8 +60,8 @@ class FlowQA(nn.Module):
             que_input_size += CoVe_size
 
         if opt['use_elmo']:
-            options_file = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json"
-            weight_file = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5"
+            options_file = '../MyIdea_v1/elmo/options.json'
+            weight_file = '../MyIdea_v1/elmo/elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5'
             self.elmo = Elmo(options_file, weight_file, 1, dropout=0)
             doc_input_size += 1024
             que_input_size += 1024
@@ -165,7 +164,8 @@ class FlowQA(nn.Module):
 
     # context_id, context_cid, context_feature, context_tag, context_ent, context_mask,
     # question_id, question_cid, question_mask
-    def forward(self, x1, x1_c, x1_f, x1_pos, x1_ner, x1_mask, x2_full, x2_c, x2_full_mask, overall_mask):
+    # @pysnooper.snoop(watch=('doc_hiddens.size()', 'x1_input.size()', 'x2_input.size()'))
+    def forward(self, x1, x1_c, x1_f, x1_pos, x1_ner, x1_mask, x2_full, x2_c, x2_full_mask):
         """Inputs:
         x1 = document word indices                                          [batch * len_d]
         x1_c = document char indices,elmo生成的，每个word长度50             [batch * len_d * len_w] or [1]
@@ -274,25 +274,10 @@ class FlowQA(nn.Module):
 
         x1_input = torch.cat(drnn_input_list, dim=2)
         x2_input = torch.cat(qrnn_input_list, dim=2)
-
         def expansion_for_doc(z):
             return z.unsqueeze(1).expand(z.size(0), x2_full.size(1), z.size(1), z.size(2)).contiguous().view(-1,
                                                                                                              z.size(1),
                                                                                                              z.size(2))
-
-        def genTagsfromoverallmask(ovm):
-            QCTags = torch.LongTensor(overall_mask.size(0) * overall_mask.size(-1)).fill_(0)
-            s = 0
-            for i, row in enumerate(ovm):
-                QCTags[s:s + ovm[i].sum().item()] = i
-                s += ovm[i].sum().item()
-            return QCTags
-
-        def test(c, ques, tags):
-            QAC = myModel.QuestionAwareContextLayer(contexts=c, questions=ques, tags=tags).forward()
-            Wqac = nn.Linear(QAC.size(-1),250)
-            QAC = Wqac(QAC)
-            return QAC
         # [bsz,len,d]==>[qnum,dlen,d]
         x1_emb_expand = expansion_for_doc(x1_emb)
         x1_cove_high_expand = expansion_for_doc(x1_cove_high)
@@ -305,6 +290,7 @@ class FlowQA(nn.Module):
             x1_f = x1_f[:, :, :, 3:]
         x1_input = torch.cat([expansion_for_doc(x1_input), x1_f.view(-1, x1_f.size(-2), x1_f.size(-1))], dim=2)
         x1_mask = x1_full_mask.view(-1, x1_full_mask.size(-1))
+        #############################################################################################################################
         # 在这里得到question-specific Context representation
         '''
         即C_i^0
@@ -390,8 +376,10 @@ class FlowQA(nn.Module):
             question_avg_hidden = self.hier_query_rnn(question_avg_hidden.view(x1_full.size(0), x1_full.size(1), -1))
             question_avg_hidden = question_avg_hidden.contiguous().view(-1, question_avg_hidden.size(-1))
         # Get Start, End span
-        print(doc_hiddens.size())
-        print(question_avg_hidden.size())
+        # print(doc_hiddens.size())
+        # print(question_avg_hidden.size())
+        # print(x1_mask.size())
+
         start_scores, end_scores = self.get_answer(doc_hiddens, question_avg_hidden, x1_mask)
         all_start_scores = start_scores.view_as(x1_full)  # batch x q_num x len_d
         all_end_scores = end_scores.view_as(x1_full)  # batch x q_num x len_d
